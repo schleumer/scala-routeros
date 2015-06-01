@@ -8,6 +8,9 @@ import java.net.Socket
 import java.io._
  
 object Client {
+  val FeedEnd = ""
+  val LoginPath = "/login"
+
   def apply(host: String, port: Integer, user: String = "", password: String = "") {
     if(user.isEmpty) {
       new Client(host, port)
@@ -94,11 +97,12 @@ class Client(host: String, port: Integer) extends Socket(host, port) {
   }
 
   // Jorge: Quiere ser hardcore y su mama no lo deja
-  def readLines(): Stream[List[String]] = List[String](rawRead()) #:: readLines.map(x => x :+ rawRead())
+  // CHUPA ESSA MANGA, JAVA
+  def readLines: Stream[String] = rawRead() #:: readLines.takeWhile(_ != Client.FeedEnd)
 
   def login(user: String, password: String): this.type = {
-    tell("/login")
-    println(readLines.takeWhile(_.tail != "").toList)
+    tell(Client.LoginPath)
+    println(readLines.toList)
     // <this> is kinda wrong
     this
   }
