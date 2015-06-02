@@ -6,18 +6,21 @@ import li.ues.routeros._
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.io._
+import scala.util.matching.Regex
+import Implicits._
+import scala.util.Random
  
 object Client {
   val FeedEnd = ""
   val LoginPath = "/login"
+  val Done = "!done"
 
-  def apply(host: String, port: Integer, user: String = "", password: String = "") {
+  def apply(host: String, port: Integer, user: String = "", password: String = ""): Client = {
     if(user.isEmpty) {
       new Client(host, port)
     } else {
       new Client(host, port).login(user, password)
-    }
-    
+    }    
   }
 }
 
@@ -27,43 +30,17 @@ class Client(host: String, port: Integer) extends Socket(host, port) {
   val in = new DataInputStream(this.getInputStream())
   val out = new DataOutputStream(this.getOutputStream())
 
-  def readLength[T]()(block: Integer => T): T = {
-    var a = in.read()
-    var sk = 0
-    if (a < 0x80) {
-      sk = a
-    } else if (a < 0xC0) {
-      a = a << 8
-      a += in.read()
-      sk = a ^ 0x8000
-    } else if (a < 0xE0) {
-      for (i <- 0 until 2) {
-        a = a << 8
-        a += in.read()
-      }
-       sk = a ^ 0xC00000
-    } else if (a < 0xF0) {
-      for (i <- 0 until 3) {
-        a = a << 8
-        a += in.read()
-      }
-    }
-    block(sk)
-  }
+  
 
-  def rawRead(): String = {
-    readLength() { len =>
-      val byteArray = new Array[Byte](len)
-      in.read(byteArray, 0, len)
-      byteArray.map(_.toChar).mkString
-    }
-  }
+  def readLength[T]()(block: Integer => T): T =
+    block(in.read() match {
+      case x if (x & 0x80) == 0x00 => x
+      case x if (x & 0xC0) == 0x80 => ((x & ~0xC0) << 8) + in.read()
+      case x if (x & 0xE0) == 0xC0 => 1.to(2).foldLeft(x & ~0xE0)((y, z) => (y << 8) + in.read())
+      case x if (x & 0xF0) == 0xE0 => 1.to(3).foldLeft(x & ~0xF0)((y, z) => (y << 8) + in.read())
+      case x if (x & 0xF8) == 0xF0 => 1.to(3).foldLeft(in.read())((y, z) => (y << 8) + in.read())
+    })
     
-
-  def rawWrite(data: String) = {
-    println(s"Writing $data(${data.length}) to $host:$port")
-    out.write(data.getBytes("US-ASCII"))
-  }
 
   private[li] def mecaSuasPalavrasParca(palavra: String) = (palavra.length match {
     case x if x < 0x80 => Seq(x)
@@ -91,19 +68,46 @@ class Client(host: String, port: Integer) extends Socket(host, port) {
     )
   }).map(_.toChar).mkString + palavra
 
-  def tell(words: String) = {
-    rawWrite(mecaSuasPalavrasParca(words))
-    rawWrite(mecaSuasPalavrasParca(""))
+  def readFromStream(): String = {
+    readLength() { len =>
+      val byteArray = new Array[Byte](len)
+      in.read(byteArray, 0, len)
+      byteArray.map(_.toChar).mkString
+    }
   }
 
-  // Jorge: Quiere ser hardcore y su mama no lo deja
-  // CHUPA ESSA MANGA, JAVA
-  def readLines: Stream[String] = rawRead() #:: readLines.takeWhile(_ != Client.FeedEnd)
-
-  def login(user: String, password: String): this.type = {
-    tell(Client.LoginPath)
-    println(readLines.toList)
-    // <this> is kinda wrong
+  def writeToStream(str: String): this.type = { 
+    out.write(mecaSuasPalavrasParca(str).getBytes("US-ASCII"));
     this
   }
+
+  def simpleRead: Stream[Data] = Data(readFromStream) #:: simpleRead.takeWhile(!_.raw.isEmpty)
+
+  def rawWrite(data: String, postData: List[String] = List[String](), tag: String = ""): this.type = {
+    println(s"Writing $data(${data.length}) to $host:$port")
+    val path: List[String] = (List(data, ".tag=" + tag) ++ postData ++ List(""))
+    path.foreach(value => writeToStream(value.toString))
+    this
+  }
+
+  def tell(command: Command) = {
+    rawWrite(command.path, command.parameters, scala.util.Random.alphanumeric.take(64).toList.mkString).simpleRead.toList
+  }
+
+
+
+  def login(user: String, password: String): this.type = {
+    tell(Command(Client.LoginPath)).last.value match {
+      case hex: String => 
+        tell(Command(Client.LoginPath, Parameters(
+          "name" -> user,
+          "response" -> ("00" + Utils.md5b(0x00, password, Hex(hex)))
+        ))).map(_.raw) match {
+          case x if !x.contains(Client.Done) => throw new Exception("YaddaYaddaYadda")
+          case Nil => throw new Exception("YaddaYaddaYadda")
+          case _ => this
+        }
+      case _ => throw new Exception("YaddaYaddaYadda")
+    }
+  } 
 }
